@@ -277,6 +277,7 @@
     die() { [74, 70, 69, 66, 63, 62].forEach((m, i) => tone(mtof(m), 0.18, 'square', 0.12, i * 0.13)); },
     bonus() { [62, 66, 69, 74].forEach((m, i) => tone(mtof(m + 12), 0.12, 'square', 0.1, i * 0.07)); },
     clear() { [62, 63, 66, 67, 69, 70, 72, 74].forEach((m, i) => tone(mtof(m + 12), 0.14, 'square', 0.1, i * 0.08)); },
+    escape() { tone(700, 0.35, 'square', 0.08, 0, 120); },
     hiss() { noise(0.35, 0.12, 6000); },
     spit() { tone(500, 0.12, 'sawtooth', 0.08, 0, 180); noise(0.1, 0.1, 2500); },
     start() { [62, 66, 69].forEach((m, i) => tone(mtof(m + 12), 0.16, 'square', 0.1, i * 0.1)); }
@@ -303,7 +304,7 @@
   // ---------- game state ----------
   let dug, linkH, linkV, pots, enemies, pebble, venoms = [], particles = [], floats = [], dallah, potsDropped;
   let state = 'title', stateT = 0, score = 0, best = store.get('sd_best', 0), lives = 3, level = 1;
-  let shake = 0, time = 0, paused = false, digSfxT = 0;
+  let shake = 0, time = 0, paused = false, digSfxT = 0, escaped = false;
   const player = {};
 
   const grid = v => Array.from({ length: ROWS }, () => new Array(COLS).fill(v));
@@ -353,17 +354,17 @@
       if (linkV[r][c]) for (let s = 0; s <= T; s += 4) carve(cx(c), cy(r) + s);
     }
 
-    potsDropped = 0; dallah = null; particles = []; floats = []; pebble = null; venoms = [];
+    potsDropped = 0; escaped = false; dallah = null; particles = []; floats = []; pebble = null; venoms = [];
     resetPlayer();
   }
 
   function makeEnemy(c, r, kind) {
-    return { kind, spitCool: rand(2, 4), windT: 0, sc: c, sr: r, x: cx(c), y: cy(r), tx: cx(c), ty: cy(r), dir: DIRS.R, face: 1, state: 'walk',
+    return { kind, spitCool: rand(2, 4), windT: 0, flee: false, fleeT: 0, sc: c, sr: r, x: cx(c), y: cy(r), tx: cx(c), ty: cy(r), dir: DIRS.R, face: 1, state: 'walk',
              prev: 'walk', hits: 0, stunT: 0, flash: 0, ghostT: 0, wanderT: rand(6, 11), popT: 0,
              anim: Math.random() * 10, squash: 0 };
   }
   function resetEnemy(e) {
-    Object.assign(e, { x: cx(e.sc), y: cy(e.sr), tx: cx(e.sc), ty: cy(e.sr), state: 'walk', hits: 0, stunT: 0, wanderT: rand(6, 11), spitCool: rand(2, 4) });
+    Object.assign(e, { x: cx(e.sc), y: cy(e.sr), tx: cx(e.sc), ty: cy(e.sr), state: 'walk', hits: 0, stunT: 0, wanderT: rand(6, 11), spitCool: rand(2, 4), flee: false, fleeT: 0 });
   }
   function resetPlayer() {
     Object.assign(player, { x: cx(START.c), y: cy(START.r), dir: null, face: DIRS.R, hface: 1,
@@ -633,6 +634,11 @@
       const dx = e.tx - e.x, dy = e.ty - e.y, d = Math.hypot(dx, dy);
       if (d <= rem) {
         e.x = e.tx; e.y = e.ty; rem -= d;
+        if (e.flee) {
+          decideFlee(e);
+          if (e.state !== 'walk') return;
+          continue;
+        }
         if (e.wanderT <= 0) { e.state = 'ghost'; e.ghostT = 0; return; }
         decide(e);
         if (e.tx === e.x && e.ty === e.y) { e.wanderT -= dt * 2; return; }
@@ -641,8 +647,49 @@
     if (e.dir.x) e.face = e.dir.x;
   }
 
+  // The last enemy runs for the exit at the top-left corner of the surface.
+  const EXIT = { c: 0, r: 0 };
+  function exitStep(c, r) {
+    const dist = grid(-1);
+    dist[EXIT.r][EXIT.c] = 0;
+    const q = [[EXIT.c, EXIT.r]];
+    while (q.length) {
+      const [qc, qr] = q.shift();
+      for (const d of DLIST) {
+        const nc = qc + d.x, nr = qr + d.y;
+        if (linkOpen(qc, qr, d) && dist[nr][nc] < 0) { dist[nr][nc] = dist[qr][qc] + 1; q.push([nc, nr]); }
+      }
+    }
+    if (dist[r][c] < 0) return null;
+    return DLIST.find(d => linkOpen(c, r, d) && dist[r + d.y][c + d.x] === dist[r][c] - 1) || null;
+  }
+
+  function decideFlee(e) {
+    if (e.x < 0) { escapeEnemy(e); return; }
+    const c = colOf(e.x), r = rowOf(e.y);
+    if (c === EXIT.c && r === EXIT.r) { e.dir = DIRS.L; e.tx = -24; e.ty = cy(0); return; }
+    const d = exitStep(c, r);
+    if (!d) { e.state = 'ghost'; e.ghostT = 0; return; }   // no tunnel out: burrow straight up
+    e.dir = d; e.tx = cx(c + d.x); e.ty = cy(r + d.y);
+  }
+
+  function escapeEnemy(e) {
+    e.state = 'dead'; escaped = true;
+    floatText(60, cy(0) + 4, 'ESCAPED!');
+    sfx.escape();
+  }
+
   function ghostEnemy(e, dt, gs) {
     e.ghostT += dt;
+    if (e.flee) {
+      e.y -= gs * 1.4 * dt;
+      if (Math.random() < 0.2) puff(e.x + rand(-8, 8), e.y + rand(-8, 8), LAYER_COLORS[layerOf(Math.max(1, rowOf(e.y)))]);
+      if (e.y <= cy(0)) {
+        e.x = cx(colOf(e.x)); e.y = cy(0); e.tx = e.x; e.ty = e.y;
+        e.state = 'walk'; decideFlee(e);
+      }
+      return;
+    }
     const dx = player.x - e.x, dy = player.y - e.y, d = Math.hypot(dx, dy) || 1;
     e.x += dx / d * gs * dt; e.y += dy / d * gs * dt;
     e.y = Math.max(cy(1), e.y);
@@ -659,14 +706,18 @@
   }
 
   function updateEnemies(dt) {
-    const active = enemies.filter(e => e.state === 'walk' || e.state === 'ghost' || e.state === 'stunned').length;
+    const active = enemies.filter(e => e.state === 'walk' || e.state === 'ghost' || e.state === 'stunned' || e.state === 'windup').length;
     const lonely = active === 1;
     const sp = 46 + level * 4 + (lonely ? 16 : 0), gs = 30 + level * 3;
     for (const e of enemies) {
       e.anim += dt; e.flash = Math.max(0, e.flash - dt); e.squash = Math.max(0, e.squash - dt * 4);
+      if (lonely && !e.flee && (e.state === 'walk' || e.state === 'ghost' || e.state === 'windup')) {
+        e.fleeT += dt;
+        if (e.fleeT > 1) { e.flee = true; if (e.state === 'windup') e.state = 'walk'; }
+      }
       if (e.state === 'walk') {
         walkEnemy(e, dt, sp, lonely);
-        if (e.kind === 'cobra' && e.state === 'walk') maybeSpit(e, dt);
+        if (e.kind === 'cobra' && e.state === 'walk' && !e.flee) maybeSpit(e, dt);
       }
       else if (e.state === 'windup') {
         e.windT += dt;
@@ -999,6 +1050,13 @@
       return;
     }
     drawCreature(e, { flat: e.state === 'crushed' });
+    if (e.flee && e.state === 'walk') {
+      const bob = Math.sin(time * 14) * 1.5;
+      ctx.fillStyle = '#9fd8ff';
+      ctx.beginPath(); ctx.moveTo(e.x - e.face * 6, e.y - 20 + bob);
+      ctx.quadraticCurveTo(e.x - e.face * 9, e.y - 14 + bob, e.x - e.face * 6, e.y - 13 + bob);
+      ctx.quadraticCurveTo(e.x - e.face * 3, e.y - 14 + bob, e.x - e.face * 6, e.y - 20 + bob); ctx.fill();
+    }
     if (e.state === 'stunned') {
       for (let i = 0; i < 3; i++) {
         const a = time * 7 + i * TAU / 3;
@@ -1114,6 +1172,7 @@
       ctx.save(); ctx.translate(W / 2, mid - 40); ctx.scale(k, k); ctx.rotate((1 - k) * 0.4);
       outlinedText('LEVEL CLEAR!', 0, 0, 40, '#ffd36b');
       ctx.restore();
+      if (escaped && stateT > 0.4) plainText('One got away!', W / 2, mid, 16);
     } else if (state === 'over') {
       dim(Math.min(0.65, stateT));
       outlinedText('GAME OVER', W / 2, mid - 50, 46, '#e98a3c');
@@ -1139,6 +1198,12 @@
     ctx.drawImage(sky, 0, 0, W, HUD + T);
     ctx.drawImage(terr, 0, HUD, W, ROWS * T);
 
+    if (enemies.some(e => e.flee && e.state !== 'dead' && e.state !== 'crushed') && Math.floor(time * 4) % 2 === 0) {
+      ctx.fillStyle = '#7a4a24'; ctx.fillRect(18, HUD + 6, 3, 22);
+      ctx.fillStyle = '#e98a3c'; ctx.beginPath();
+      ctx.moveTo(6, HUD + 10); ctx.lineTo(14, HUD + 4); ctx.lineTo(40, HUD + 4); ctx.lineTo(40, HUD + 16); ctx.lineTo(14, HUD + 16); ctx.closePath(); ctx.fill();
+      ctx.font = `9px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#3a1d0c'; ctx.fillText('EXIT', 27, HUD + 10.5);
+    }
     for (const p of pots) drawPot(p);
     if (dallah && (dallah.t > 2.5 || Math.floor(time * 8) % 2 === 0)) drawDallah(dallah.x, dallah.y + Math.sin(time * 4) * 2);
     for (const e of enemies) drawEnemy(e);
@@ -1164,7 +1229,7 @@
   buildLevel();
   if (location.hash === '#debug') {
     window.__sd = { player, get enemies() { return enemies; }, get pots() { return pots; }, get state() { return state; },
-                    get score() { return score; }, get venoms() { return venoms; }, get dug() { return dug; }, hitEnemy, cx, cy };
+                    get score() { return score; }, get escaped() { return escaped; }, exitStep, get venoms() { return venoms; }, get dug() { return dug; }, hitEnemy, cx, cy };
   }
   let last = performance.now();
   function frame(now) {
