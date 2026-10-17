@@ -2,7 +2,7 @@
 
 A desert digging arcade game. Play it at **https://sand.sala.company**.
 
-Dig through the dunes as a Bedouin kid, sling the uromastyx lizards (three hits knock one out), and dig under clay pots to drop them on the lizards. Drop two pots and a golden dallah appears for bonus points.
+Dig through the dunes as a Bedouin kid, sling the uromastyx lizards and cobras (three hits knock one out), and dig under clay pots to drop them on them. Cobras rear up and spit venom sideways, and it flies straight through sand; knock a cobra out with a sideways shot for double points. Drop two pots and a golden dallah appears for bonus points.
 
 ## Controls
 

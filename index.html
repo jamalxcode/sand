@@ -277,6 +277,8 @@
     die() { [74, 70, 69, 66, 63, 62].forEach((m, i) => tone(mtof(m), 0.18, 'square', 0.12, i * 0.13)); },
     bonus() { [62, 66, 69, 74].forEach((m, i) => tone(mtof(m + 12), 0.12, 'square', 0.1, i * 0.07)); },
     clear() { [62, 63, 66, 67, 69, 70, 72, 74].forEach((m, i) => tone(mtof(m + 12), 0.14, 'square', 0.1, i * 0.08)); },
+    hiss() { noise(0.35, 0.12, 6000); },
+    spit() { tone(500, 0.12, 'sawtooth', 0.08, 0, 180); noise(0.1, 0.1, 2500); },
     start() { [62, 66, 69].forEach((m, i) => tone(mtof(m + 12), 0.16, 'square', 0.1, i * 0.1)); }
   };
 
@@ -299,7 +301,7 @@
   }
 
   // ---------- game state ----------
-  let dug, linkH, linkV, pots, enemies, pebble, particles = [], floats = [], dallah, potsDropped;
+  let dug, linkH, linkV, pots, enemies, pebble, venoms = [], particles = [], floats = [], dallah, potsDropped;
   let state = 'title', stateT = 0, score = 0, best = store.get('sd_best', 0), lives = 3, level = 1;
   let shake = 0, time = 0, paused = false, digSfxT = 0;
   const player = {};
@@ -334,7 +336,7 @@
         if (i > 0) { if (horiz) linkH[r][c - 1] = true; else linkV[r - 1][c] = true; }
       });
       const [mc, mr] = cells[Math.floor(len / 2)];
-      enemies.push(makeEnemy(mc, mr));
+      enemies.push(makeEnemy(mc, mr, enemies.length % 3 === 1 ? 'cobra' : 'lizard'));
     }
 
     pots = []; tries = 0;
@@ -351,17 +353,17 @@
       if (linkV[r][c]) for (let s = 0; s <= T; s += 4) carve(cx(c), cy(r) + s);
     }
 
-    potsDropped = 0; dallah = null; particles = []; floats = []; pebble = null;
+    potsDropped = 0; dallah = null; particles = []; floats = []; pebble = null; venoms = [];
     resetPlayer();
   }
 
-  function makeEnemy(c, r) {
-    return { sc: c, sr: r, x: cx(c), y: cy(r), tx: cx(c), ty: cy(r), dir: DIRS.R, face: 1, state: 'walk',
+  function makeEnemy(c, r, kind) {
+    return { kind, spitCool: rand(2, 4), windT: 0, sc: c, sr: r, x: cx(c), y: cy(r), tx: cx(c), ty: cy(r), dir: DIRS.R, face: 1, state: 'walk',
              prev: 'walk', hits: 0, stunT: 0, flash: 0, ghostT: 0, wanderT: rand(6, 11), popT: 0,
              anim: Math.random() * 10, squash: 0 };
   }
   function resetEnemy(e) {
-    Object.assign(e, { x: cx(e.sc), y: cy(e.sr), tx: cx(e.sc), ty: cy(e.sr), state: 'walk', hits: 0, stunT: 0, wanderT: rand(6, 11) });
+    Object.assign(e, { x: cx(e.sc), y: cy(e.sr), tx: cx(e.sc), ty: cy(e.sr), state: 'walk', hits: 0, stunT: 0, wanderT: rand(6, 11), spitCool: rand(2, 4) });
   }
   function resetPlayer() {
     Object.assign(player, { x: cx(START.c), y: cy(START.r), dir: null, face: DIRS.R, hface: 1,
@@ -560,21 +562,21 @@
         pebble = null; return;
       }
       for (const e of enemies) {
-        if ((e.state === 'walk' || e.state === 'ghost' || e.state === 'stunned') && Math.hypot(e.x - pebble.x, e.y - pebble.y) < 15) {
-          hitEnemy(e); pebble = null; return;
+        if ((e.state === 'walk' || e.state === 'ghost' || e.state === 'stunned' || e.state === 'windup') && Math.hypot(e.x - pebble.x, e.y - pebble.y) < 15) {
+          hitEnemy(e, pebble.dir); pebble = null; return;
         }
       }
     }
   }
 
-  function hitEnemy(e) {
-    if (e.state !== 'stunned') e.prev = e.state;
+  function hitEnemy(e, dir) {
+    if (e.state !== 'stunned') e.prev = e.state === 'ghost' ? 'ghost' : 'walk';
     e.hits++; e.flash = 0.12; e.squash = 1;
     shake = Math.max(shake, 2.5);
     burst(e.x, e.y, '#fff6d0', 8, 120);
     if (e.hits >= 3) {
       e.state = 'pop'; e.popT = 0;
-      const pts = LAYER_POINTS[layerOf(Math.max(1, rowOf(e.y)))];
+      const pts = LAYER_POINTS[layerOf(Math.max(1, rowOf(e.y)))] * (e.kind === 'cobra' && dir && dir.x ? 2 : 1);
       addScore(pts); floatText(e.x, e.y - 14, pts);
       shake = Math.max(shake, 5);
       burst(e.x, e.y, '#ffd84a', 16, 200); burst(e.x, e.y, '#9bb84a', 10, 160);
@@ -588,7 +590,7 @@
   function killPlayer(crushed) {
     if (!player.alive) return;
     player.alive = false; player.crushed = !!crushed;
-    pebble = null; shake = 8;
+    pebble = null; venoms = []; shake = 8;
     burst(player.x, player.y, '#ffffff', 12, 150);
     sfx.die();
     setState('dying');
@@ -662,12 +664,43 @@
     const sp = 46 + level * 4 + (lonely ? 16 : 0), gs = 30 + level * 3;
     for (const e of enemies) {
       e.anim += dt; e.flash = Math.max(0, e.flash - dt); e.squash = Math.max(0, e.squash - dt * 4);
-      if (e.state === 'walk') walkEnemy(e, dt, sp, lonely);
+      if (e.state === 'walk') {
+        walkEnemy(e, dt, sp, lonely);
+        if (e.kind === 'cobra' && e.state === 'walk') maybeSpit(e, dt);
+      }
+      else if (e.state === 'windup') {
+        e.windT += dt;
+        if (e.windT > 0.6) {
+          venoms.push({ x: e.x + e.face * 14, y: e.y - 6, dir: e.face, dist: 0 });
+          e.state = 'walk'; e.spitCool = rand(2.5, 4.5) / (1 + level * 0.08);
+          sfx.spit();
+        }
+      }
       else if (e.state === 'ghost') ghostEnemy(e, dt, gs);
       else if (e.state === 'stunned') { e.stunT -= dt; if (e.stunT <= 0) { e.hits = 0; e.state = e.prev; } }
       else if (e.state === 'pop') { e.popT += dt; if (e.popT > 0.45) e.state = 'dead'; }
-      if ((e.state === 'walk' || e.state === 'ghost') && player.alive && Math.hypot(e.x - player.x, e.y - player.y) < 20) killPlayer(false);
+      if ((e.state === 'walk' || e.state === 'ghost' || e.state === 'windup') && player.alive && Math.hypot(e.x - player.x, e.y - player.y) < 20) killPlayer(false);
     }
+  }
+
+  // Cobras rear up and spit venom sideways. The venom flies through sand, like the arcade dragon's fire.
+  function maybeSpit(e, dt) {
+    e.spitCool -= dt;
+    if (e.spitCool > 0) return;
+    const dx = player.x - e.x;
+    const inLine = player.alive && Math.abs(player.y - e.y) < 12 && dx * e.face > 0 && Math.abs(dx) < T * 4.5;
+    if (inLine || Math.random() < dt * 0.3) { e.state = 'windup'; e.windT = 0; sfx.hiss(); }
+  }
+
+  function updateVenoms(dt) {
+    for (const v of venoms) {
+      const st = 210 * dt;
+      v.x += v.dir * st; v.dist += st;
+      if (Math.random() < 0.6) particles.push({ x: v.x - v.dir * 4, y: v.y + rand(-2, 2), vx: -v.dir * rand(10, 30), vy: rand(-10, 10),
+                                                life: 0.3, max: 0.3, color: '#9be04a', size: rand(1.5, 2.5), g: 0 });
+      if (player.alive && Math.hypot(v.x - player.x, v.y - player.y) < 12) { v.dist = 1e9; killPlayer(false); }
+    }
+    venoms = venoms.filter(v => v.dist < T * 4 && v.x > -10 && v.x < W + 10);
   }
 
   // ---------- pots & bonus ----------
@@ -682,7 +715,7 @@
         p.y += 260 * dt;
         const px = cx(p.c);
         for (const e of enemies) {
-          if ((e.state === 'walk' || e.state === 'ghost' || e.state === 'stunned') &&
+          if ((e.state === 'walk' || e.state === 'ghost' || e.state === 'stunned' || e.state === 'windup') &&
               Math.abs(e.x - px) < 20 && e.y > p.y - 6 && e.y < p.y + 26) {
             e.state = 'crushed'; p.crushed.push(e); sfx.hit(3);
           }
@@ -733,7 +766,7 @@
     updateParticles(dt);
     if (state === 'ready') { if (stateT > 1.4) setState('play'); }
     else if (state === 'play') {
-      updatePlayer(dt); updatePebble(dt); updateEnemies(dt); updatePots(dt); updateDallah(dt);
+      updatePlayer(dt); updatePebble(dt); updateEnemies(dt); updateVenoms(dt); updatePots(dt); updateDallah(dt);
       if (state === 'play' && enemies.every(e => e.state === 'dead')) { setState('clear'); sfx.clear(); saveBest(); }
     }
     else if (state === 'dying') { updatePots(dt); if (stateT > 1.8) afterDeath(); }
@@ -885,16 +918,74 @@
     ctx.restore();
   }
 
+  function drawCobra(e, o = {}) {
+    const white = e.flash > 0;
+    const hitT = Math.min(1, e.hits / 3);
+    const body = white ? '#ffffff' : mixColor('#3f3226', '#c0442a', hitT);
+    const band = white ? '#ffffff' : mixColor('#d9b878', '#ffd0a0', hitT);
+    const belly = white ? '#ffffff' : '#ecd29a';
+    const moving = e.state === 'walk' || e.state === 'ghost';
+    const sway = moving ? Math.sin(e.anim * 8) * 1.5 : 0;
+    const wind = e.state === 'windup' ? Math.min(1, e.windT / 0.25) : 0;
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    let s = 1 + 0.14 * e.hits + e.squash * 0.15;
+    let sx = s * (1 + e.squash * 0.15), sy = s * (1 - e.squash * 0.12);
+    if (o.flat) { sx = 1.4; sy = 0.35; }
+    ctx.scale(sx * e.face, sy);
+    if (wind) ctx.translate(-wind * 2 + Math.sin(e.windT * 60) * 0.6, 0);
+    // coils
+    ctx.fillStyle = body;
+    ellipse(-6, 7, 10.5, 5.2);
+    ellipse(4, 8, 9, 4.6);
+    ctx.fillStyle = band;
+    for (let i = -12; i <= 10; i += 5) ellipse(i + sway * 0.5, 7.5, 1.3, 3.8);
+    // tail tip
+    ctx.fillStyle = body;
+    ctx.beginPath(); ctx.moveTo(-14, 7); ctx.quadraticCurveTo(-19, 4 + sway, -20, 1 + sway); ctx.quadraticCurveTo(-17, 7, -13, 10); ctx.fill();
+    // raised neck
+    ctx.strokeStyle = body; ctx.lineWidth = 7; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(4, 6); ctx.quadraticCurveTo(10 + sway, 0, 7 + sway * 0.5, -7); ctx.stroke();
+    // hood, wider while winding up
+    const hw = 6 + wind * 4;
+    const hx = 7 + sway * 0.5, hy = -8;
+    ctx.fillStyle = body; ellipse(hx, hy, hw, 7);
+    ctx.fillStyle = belly; ellipse(hx + 1, hy + 1, hw * 0.45, 5);
+    if (!white) { ctx.fillStyle = band; ellipse(hx + 1, hy + 2, hw * 0.25, 1.2); }
+    // head
+    ctx.fillStyle = body; ellipse(hx + 4, hy - 6, 5.5, 4.2);
+    const ex = hx + 5, ey = hy - 7;
+    ctx.fillStyle = '#fff'; ellipse(ex, ey, 2.4, 2.6);
+    if (e.state === 'stunned') {
+      ctx.strokeStyle = '#1d1208'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ex - 1.5, ey - 1.5); ctx.lineTo(ex + 1.5, ey + 1.5); ctx.moveTo(ex + 1.5, ey - 1.5); ctx.lineTo(ex - 1.5, ey + 1.5); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#1d1208'; ellipse(ex + 0.6, ey, 0.9, 1.8);
+    }
+    // tongue flick, or open mouth while winding up
+    if (wind) {
+      ctx.fillStyle = '#7a1e1e'; ellipse(hx + 9, hy - 5, 2 * wind, 1.6 * wind);
+      ctx.fillStyle = '#9be04a'; ellipse(hx + 10, hy - 5, 1.2 * wind, 1.2 * wind);
+    } else if (moving && Math.sin(e.anim * 5) > 0.6) {
+      ctx.strokeStyle = '#d23a3a'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(hx + 9, hy - 5); ctx.lineTo(hx + 13, hy - 5); ctx.lineTo(hx + 14.5, hy - 6.5);
+      ctx.moveTo(hx + 13, hy - 5); ctx.lineTo(hx + 14.5, hy - 3.5); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawCreature(e, o) { if (e.kind === 'cobra') drawCobra(e, o); else drawLizard(e, o); }
+
   function drawEnemy(e) {
     if (e.state === 'dead') return;
     if (e.state === 'ghost') {
       ctx.save();
       ctx.globalAlpha = 0.28 + 0.1 * Math.sin(time * 8);
-      drawLizard(e);
+      drawCreature(e, {});
       ctx.restore();
-      const f = e.face;
-      ctx.fillStyle = '#fff'; ellipse(e.x + f * 4, e.y - 3, 3.2, 3.6); ellipse(e.x + f * 11, e.y - 3, 3.2, 3.6);
-      ctx.fillStyle = '#1d1208'; ellipse(e.x + f * 5, e.y - 3, 1.5, 1.9); ellipse(e.x + f * 12, e.y - 3, 1.5, 1.9);
+      const f = e.face, ey = e.kind === 'cobra' ? e.y - 14 : e.y - 3;
+      ctx.fillStyle = '#fff'; ellipse(e.x + f * 4, ey, 3.2, 3.6); ellipse(e.x + f * 11, ey, 3.2, 3.6);
+      ctx.fillStyle = '#1d1208'; ellipse(e.x + f * 5, ey, 1.5, 1.9); ellipse(e.x + f * 12, ey, 1.5, 1.9);
       return;
     }
     if (e.state === 'pop') {
@@ -903,11 +994,11 @@
       ctx.strokeStyle = '#fff3c4'; ctx.lineWidth = 3 * (1 - t);
       ctx.beginPath(); ctx.arc(e.x, e.y, 10 + t * 30, 0, TAU); ctx.stroke();
       ctx.translate(e.x, e.y); ctx.scale(1 + t, 1 + t); ctx.translate(-e.x, -e.y);
-      drawLizard(e);
+      drawCreature(e, {});
       ctx.restore();
       return;
     }
-    drawLizard(e, { flat: e.state === 'crushed' });
+    drawCreature(e, { flat: e.state === 'crushed' });
     if (e.state === 'stunned') {
       for (let i = 0; i < 3; i++) {
         const a = time * 7 + i * TAU / 3;
@@ -1006,11 +1097,13 @@
       const b = Math.sin(time * 3) * 4;
       outlinedText('SAND', W / 2, mid - 120 + b, 58, '#ffb46b');
       outlinedText('DIGGER', W / 2, mid - 70 + b, 58, '#e98a3c');
-      drawKid(W / 2 - 40, mid + 6, { sx: 1.8, sy: 1.8 + Math.sin(time * 6) * 0.06, hface: 1, aim: DIRS.R });
-      drawLizard({ x: W / 2 + 46, y: mid + 8, face: -1, hits: 0, flash: 0, squash: 0, state: 'walk', anim: time }, {});
-      const lines = ['Dig through the dunes.', 'Sling a lizard 3 times to knock it out.', 'Dig under pots to drop them on lizards.', 'Drop 2 pots and a golden dallah appears.'];
-      lines.forEach((l, i) => plainText(l, W / 2, mid + 60 + i * 20, 14, '#fbe7c6'));
-      if (Math.floor(time * 2) % 2 === 0) outlinedText(document.body.classList.contains('touch') ? 'TAP TO START' : 'PRESS ENTER', W / 2, mid + 160, 24, '#ffd36b');
+      drawKid(W / 2 - 60, mid + 6, { sx: 1.8, sy: 1.8 + Math.sin(time * 6) * 0.06, hface: 1, aim: DIRS.R });
+      drawLizard({ x: W / 2 + 20, y: mid + 8, face: -1, hits: 0, flash: 0, squash: 0, state: 'walk', anim: time }, {});
+      drawCobra({ x: W / 2 + 70, y: mid + 4, face: -1, hits: 0, flash: 0, squash: 0, state: 'walk', anim: time }, {});
+      const lines = ['Dig through the dunes.', 'Sling a lizard or cobra 3 times to knock it out.', 'Cobras spit venom sideways, even through sand.',
+                     'Dig under pots to drop them on enemies.', 'Drop 2 pots and a golden dallah appears.'];
+      lines.forEach((l, i) => plainText(l, W / 2, mid + 50 + i * 19, 14, '#fbe7c6'));
+      if (Math.floor(time * 2) % 2 === 0) outlinedText(document.body.classList.contains('touch') ? 'TAP TO START' : 'PRESS ENTER', W / 2, mid + 165, 24, '#ffd36b');
     } else if (state === 'ready') {
       const k = Math.min(1, stateT * 4);
       ctx.save(); ctx.translate(W / 2, mid - 40); ctx.scale(k, k);
@@ -1049,6 +1142,11 @@
     for (const p of pots) drawPot(p);
     if (dallah && (dallah.t > 2.5 || Math.floor(time * 8) % 2 === 0)) drawDallah(dallah.x, dallah.y + Math.sin(time * 4) * 2);
     for (const e of enemies) drawEnemy(e);
+    for (const v of venoms) {
+      ctx.fillStyle = 'rgba(155,224,74,.35)'; ellipse(v.x - v.dir * 5, v.y, 6, 3.5);
+      ctx.fillStyle = '#7ccf2e'; ellipse(v.x, v.y, 4, 3);
+      ctx.fillStyle = '#e6ffc2'; ellipse(v.x + v.dir, v.y - 1, 1.2, 1);
+    }
     if (pebble) {
       ctx.fillStyle = 'rgba(255,240,200,.35)'; ellipse(pebble.x - pebble.dir.x * 6, pebble.y - pebble.dir.y * 6, 3, 3);
       ctx.fillStyle = '#5c5048'; ellipse(pebble.x, pebble.y, 3, 3);
@@ -1066,7 +1164,7 @@
   buildLevel();
   if (location.hash === '#debug') {
     window.__sd = { player, get enemies() { return enemies; }, get pots() { return pots; }, get state() { return state; },
-                    get score() { return score; }, get dug() { return dug; }, hitEnemy, cx, cy };
+                    get score() { return score; }, get venoms() { return venoms; }, get dug() { return dug; }, hitEnemy, cx, cy };
   }
   let last = performance.now();
   function frame(now) {
