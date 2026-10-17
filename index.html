@@ -126,7 +126,6 @@
   window.addEventListener('resize', resize);
   resize();
 
-  // ---------- sky (static) ----------
   // ---------- procedural texture helpers ----------
   function hash2(x, y, sd) {
     let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(sd, 144269504)) | 0;
@@ -273,14 +272,16 @@
       const depth = (ly - T) / ((ROWS - 1) * T);
       for (let lx = 0; lx < W; lx++) {
         const big = fbm(lx * 0.025, ly * 0.025, sd, 3);
-        const lf = Math.max(0, Math.min(3.999, depth * 4 + (big - 0.5) * 0.5));
-        const L = lf | 0, fr = lf - L;
+        // boundaries sit at the top of rows 5, 9 and 13, the same bands layerOf scores, wobbling +/-6 px
+        let L = 0, past = 0;
+        for (let k = 1; k < 4; k++) { const b = (1 + k * 4) * T + (big - 0.5) * 12; if (ly >= b) { L = k; past = ly - b; } }
+        const fr = L > 0 ? past / 6 : 1;
         let c = LAYER_RGB[L];
         let sh = (fbm(lx * 0.12, ly * 0.12, sd + 7, 2) - 0.5) * 0.16;
         sh += Math.sin((ly + big * 30) * 0.9) * 0.025;
         sh -= depth * 0.1;
-        if (L > 0 && fr < 0.05) {
-          const t = fr / 0.05, pc = LAYER_RGB[L - 1];
+        if (fr < 1) {
+          const t = fr, pc = LAYER_RGB[L - 1];
           c = [pc[0] + (c[0] - pc[0]) * t, pc[1] + (c[1] - pc[1]) * t, pc[2] + (c[2] - pc[2]) * t];
           sh -= 0.1 * (1 - Math.abs(2 * t - 1));
         }
@@ -332,12 +333,14 @@
     g.fillStyle = cg; g.fillRect(0, T, W, 6);
   }
 
+  // Generated once at load; each level reuses it with its own pebbles, roots and fossils, so changing level never stalls.
   tunnelBg.getContext('2d').putImageData(sandImage(ri(1, 9999), true), 0, 0);
+  const SAND = sandImage(ri(1, 9999), false);
 
   function buildTerrain() {
     tctx.setTransform(1, 0, 0, 1, 0, 0);
     tctx.globalCompositeOperation = 'source-over';
-    tctx.putImageData(sandImage(ri(1, 9999), false), 0, 0);
+    tctx.putImageData(SAND, 0, 0);
     decorateSand(tctx);
     shctx.setTransform(TS, 0, 0, TS, 0, 0);
     shctx.globalCompositeOperation = 'source-over';
@@ -350,8 +353,16 @@
   }
 
   // Removes sand in a circle; returns how many fine cells were newly opened.
-  function carve(x, y, rad = 14) {
+  function carve(x, y, rad = 14, onlyIfNew = false) {
     const ly = y - HUD;
+    const c0 = Math.max(0, Math.floor((x - rad) / FINE)), c1 = Math.min(FC - 1, Math.floor((x + rad) / FINE));
+    const r0 = Math.max(0, Math.floor((ly - rad) / FINE)), r1 = Math.min(FR - 1, Math.floor((ly + rad) / FINE));
+    const cells = [];
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+      const px = c * FINE + FINE / 2, py = r * FINE + FINE / 2;
+      if ((px - x) ** 2 + (py - ly) ** 2 <= rad * rad && !fine[r * FC + c]) cells.push(r * FC + c);
+    }
+    if (onlyIfNew && !cells.length) return 0;
     // a few small bites around the rim make the tunnel edge crumbly instead of a perfect circle
     const bites = [[x, ly, rad]];
     for (let i = 0; i < 3; i++) {
@@ -367,14 +378,8 @@
       g.globalCompositeOperation = 'source-over';
     }
     markDirty(x - rad - 8, ly - rad - 8, x + rad + 8, ly + rad + 8);
-    let n = 0;
-    const c0 = Math.max(0, Math.floor((x - rad) / FINE)), c1 = Math.min(FC - 1, Math.floor((x + rad) / FINE));
-    const r0 = Math.max(0, Math.floor((ly - rad) / FINE)), r1 = Math.min(FR - 1, Math.floor((ly + rad) / FINE));
-    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-      const px = c * FINE + FINE / 2, py = r * FINE + FINE / 2;
-      if ((px - x) ** 2 + (py - ly) ** 2 <= rad * rad && !fine[r * FC + c]) { fine[r * FC + c] = 1; n++; }
-    }
-    return n;
+    for (const i of cells) fine[i] = 1;
+    return cells.length;
   }
   function openAt(x, y) {
     const c = Math.floor(x / FINE), r = Math.floor((y - HUD) / FINE);
@@ -517,7 +522,7 @@
       if (linkV[r][c]) for (let s = 0; s <= T; s += 4) carve(cx(c), cy(r) + s);
     }
 
-    potsDropped = 0; escaped = false; dallah = null; particles = []; floats = []; pebble = null; venoms = [];
+    potsDropped = 0; escaped = false; dallah = null; levelFresh = true; particles = []; floats = []; pebble = null; venoms = [];
     resetPlayer();
   }
 
@@ -535,9 +540,12 @@
   }
 
   function setState(s) { state = s; stateT = 0; }
+  let levelFresh = false;   // the current level has not been played yet, so a new game can reuse it
   function startGame() {
     score = 0; lives = 3; level = 1; musicStep = 0;
-    buildLevel(); setState('ready'); sfx.start();
+    if (!levelFresh) buildLevel();
+    levelFresh = false;
+    setState('ready'); sfx.start();
   }
   function addScore(n) { score += n; if (score > best) best = score; }
   function saveBest() { store.set('sd_best', best); }
@@ -689,7 +697,7 @@
     const c = colOf(player.x), r = rowOf(player.y);
     if (r >= 1 && !dug[r][c]) { dug[r][c] = true; addScore(10); }
     const f = player.face;
-    const n = carve(player.x + f.x * 2, player.y + f.y * 2);
+    const n = carve(player.x + f.x * 2, player.y + f.y * 2, 14, true);
     digSfxT -= dt;
     if (n > 0) {
       const color = LAYER_COLORS[layerOf(Math.max(1, rowOf(player.y + f.y * 12)))];
@@ -981,6 +989,7 @@
     if (state === 'ready') { if (stateT > 1.4) setState('play'); }
     else if (state === 'play') {
       updatePlayer(dt); updatePebble(dt); updateEnemies(dt); updateVenoms(dt); updatePots(dt); updateDallah(dt);
+      levelFresh = false;
       if (state === 'play' && enemies.every(e => e.state === 'dead')) { setState('clear'); sfx.clear(); saveBest(); }
     }
     else if (state === 'dying') { updatePots(dt); if (stateT > 1.8) afterDeath(); }
@@ -1119,9 +1128,9 @@
     const moving = e.state === 'walk' || e.state === 'ghost';
     const wag = moving ? Math.sin(e.anim * 10) * 2 : 0;
     ctx.save();
-    if (!o.flat && e.state !== 'ghost') { ctx.fillStyle = 'rgba(20,8,2,.3)'; ellipse(e.x, e.y + 8, 14, 2.6); }
-    ctx.translate(e.x, e.y);
     const s = 1 + 0.14 * e.hits + e.squash * 0.15;
+    if (!o.flat && e.state !== 'ghost') { ctx.fillStyle = 'rgba(20,8,2,.3)'; ellipse(e.x, e.y + 8 * s, 14 * s, 2.6); }
+    ctx.translate(e.x, e.y);
     let sx = s * (1 + e.squash * 0.15), sy = s * (1 - e.squash * 0.12);
     if (o.flat) { sx = 1.4; sy = 0.35; }
     ctx.scale(sx * e.face, sy);
@@ -1187,9 +1196,9 @@
     const sway = moving ? Math.sin(e.anim * 8) * 1.5 : 0;
     const wind = e.state === 'windup' ? Math.min(1, e.windT / 0.25) : 0;
     ctx.save();
-    if (!o.flat && e.state !== 'ghost') { ctx.fillStyle = 'rgba(20,8,2,.3)'; ellipse(e.x - 2, e.y + 12, 15, 2.6); }
-    ctx.translate(e.x, e.y);
     const s = 1 + 0.14 * e.hits + e.squash * 0.15;
+    if (!o.flat && e.state !== 'ghost') { ctx.fillStyle = 'rgba(20,8,2,.3)'; ellipse(e.x - 2 * s, e.y + 12 * s, 15 * s, 2.6); }
+    ctx.translate(e.x, e.y);
     let sx = s * (1 + e.squash * 0.15), sy = s * (1 - e.squash * 0.12);
     if (o.flat) { sx = 1.4; sy = 0.35; }
     ctx.scale(sx * e.face, sy);
@@ -1281,18 +1290,13 @@
     }
   }
 
+  const POT_PATH = new Path2D('M -5 -11 L 5 -11 Q 5 -7 10 -3 Q 14 6 6 12 L -6 12 Q -14 6 -10 -3 Q -5 -7 -5 -11 Z');
   function drawPot(p) {
     ctx.save();
     ctx.translate(cx(p.c), p.y);
     if (p.state === 'wobble') ctx.rotate(Math.sin(p.t * 40) * 0.14);
     ctx.fillStyle = 'rgba(30,12,4,.35)'; ellipse(0, 12.5, 11, 2.6);
-    const body = new Path2D();
-    body.moveTo(-5, -11); body.lineTo(5, -11);
-    body.quadraticCurveTo(5, -7, 10, -3);
-    body.quadraticCurveTo(14, 6, 6, 12);
-    body.lineTo(-6, 12);
-    body.quadraticCurveTo(-14, 6, -10, -3);
-    body.quadraticCurveTo(-5, -7, -5, -11);
+    const body = POT_PATH;
     const g = ctx.createRadialGradient(-4, -3, 1, 0, 2, 16);
     g.addColorStop(0, '#e8956a'); g.addColorStop(0.45, '#bf5e34'); g.addColorStop(1, '#6e2c14');
     ctx.fillStyle = g; ctx.fill(body);
@@ -1420,9 +1424,10 @@
   }
 
   const vignette = document.createElement('canvas');
-  vignette.width = W; vignette.height = H - HUD;
+  vignette.width = W * 3; vignette.height = (H - HUD) * 3;
   (function () {
     const g = vignette.getContext('2d'), vh = H - HUD;
+    g.scale(3, 3);
     const vg = g.createRadialGradient(W / 2, vh * 0.45, Math.min(W, vh) * 0.35, W / 2, vh * 0.5, Math.max(W, vh) * 0.75);
     vg.addColorStop(0, 'rgba(20,8,2,0)'); vg.addColorStop(1, 'rgba(20,8,2,.45)');
     g.fillStyle = vg; g.fillRect(0, 0, W, vh);
@@ -1435,6 +1440,7 @@
     ctx.save();
     if (shake > 0) ctx.translate(rand(-1, 1) * shake * 0.6, rand(-1, 1) * shake * 0.6);
     ctx.drawImage(sky, 0, 0, W, HUD + T);
+    ctx.fillStyle = '#3a2214'; ctx.fillRect(-10, HUD + T, W + 20, H - HUD - T + 10);
     composeGround();
     ctx.drawImage(ground, 0, HUD, W, ROWS * T);
 
@@ -1473,7 +1479,7 @@
   buildLevel();
   if (location.hash === '#debug') {
     window.__sd = { player, get enemies() { return enemies; }, get pots() { return pots; }, get state() { return state; },
-                    get score() { return score; }, get escaped() { return escaped; }, exitStep, get venoms() { return venoms; }, get dug() { return dug; }, hitEnemy, cx, cy };
+                    get score() { return score; }, get escaped() { return escaped; }, exitStep, get venoms() { return venoms; }, get dug() { return dug; }, hitEnemy, buildLevel, cx, cy };
   }
   let last = performance.now();
   function frame(now) {
